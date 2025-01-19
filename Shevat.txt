@@ -14,45 +14,25 @@ gl_df = pd.read_excel(gl_file)
 print("GL Data Loaded:")
 print(gl_df)
 
-# Function to append raw data without grouping, ensuring all columns are retained
-def append_and_sum_raw(file_path, new_data, sheet_name):
-    if not os.path.exists(file_path):
-        # Create the file and write the data if it doesn't exist
-        with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
-            new_data.to_excel(writer, sheet_name=sheet_name, index=False)
-    else:
-        try:
-            # Load existing data
-            existing_data = pd.read_excel(file_path, sheet_name=sheet_name)
-            # Combine existing and new data
-            combined_data = pd.concat([existing_data, new_data], ignore_index=True)
-        except ValueError:
-            # If the sheet doesn't exist, use only new data
-            combined_data = new_data
-
-        # Write the combined data back to the sheet
-        with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-            combined_data.to_excel(writer, sheet_name=sheet_name, index=False)
-
-# Function to append and group Red Pivot
-def append_and_group_red_pivot(file_path, new_red_pivot, sheet_name):
+# Function to append and group pivot data
+def append_and_group_pivot(file_path, new_pivot, sheet_name, column_name):
     if os.path.exists(file_path):
         try:
-            # Load existing Red Pivot
+            # Load existing data from the pivot sheet
             existing_data = pd.read_excel(file_path, sheet_name=sheet_name)
             # Combine existing and new data
-            combined_data = pd.concat([existing_data, new_red_pivot], ignore_index=True)
+            combined_data = pd.concat([existing_data, new_pivot], ignore_index=True)
         except ValueError:
             # If the sheet doesn't exist, use only new data
-            combined_data = new_red_pivot
+            combined_data = new_pivot
     else:
         # If the file doesn't exist, use only new data
-        combined_data = new_red_pivot
+        combined_data = new_pivot
 
-    # Group by Account and sum the amounts
-    grouped_data = combined_data.groupby('Account', as_index=False)['Amount'].sum()
+    # Group by Account and sum the specified column
+    grouped_data = combined_data.groupby('Account', as_index=False)[column_name].sum()
 
-    # Write the updated Red Pivot back to the sheet
+    # Write the updated pivot back to the sheet
     with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
         grouped_data.to_excel(writer, sheet_name=sheet_name, index=False)
 
@@ -93,30 +73,32 @@ def update_tally_res(file_path, new_tally_res, sheet_name):
         grouped_data_with_total.to_excel(writer, sheet_name=sheet_name, index=False)
 
 # Process payact
-append_and_sum_raw(master_file, payact_df, "payact")
+append_and_group_pivot(master_file, payact_df, "payact", "Amount")
 
 # Process Daily Consolidate
 filtered_gl = gl_df[(gl_df['Type'] == 'res') & (gl_df['Terminal'] == 'z@td')]
-append_and_sum_raw(master_file, filtered_gl, "Daily Consolidate")
+append_and_group_pivot(master_file, filtered_gl, "Daily Consolidate", "Amount")
 
 # Process Manual Voucher
 manual_voucher = gl_df[(gl_df['Type'] == 'res') & (gl_df['Terminal'] != 'z@td')].copy()
 if not manual_voucher.empty:
     manual_voucher['D/C'] = manual_voucher['Amount'].apply(lambda x: 'Debit' if x < 0 else 'Credit')
     manual_voucher['Amount'] = manual_voucher['Amount'].abs()
-    append_and_sum_raw(master_file, manual_voucher, "Manual Voucher")
+    append_and_group_pivot(master_file, manual_voucher, "Manual Voucher", "Amount")
 
 # Process Credit Pivot
 credit_pivot = manual_voucher[manual_voucher['D/C'] == 'Credit'].groupby('Account', as_index=False)['Amount'].sum()
 credit_pivot = credit_pivot.rename(columns={'Amount': 'Credit Amount'})
+append_and_group_pivot(master_file, credit_pivot, "Credit Pivot", "Credit Amount")  # Save Credit Pivot
 
 # Process Debit Pivot
 debit_pivot = manual_voucher[manual_voucher['D/C'] == 'Debit'].groupby('Account', as_index=False)['Amount'].sum()
 debit_pivot = debit_pivot.rename(columns={'Amount': 'Debit Amount'})
+append_and_group_pivot(master_file, debit_pivot, "Debit Pivot", "Debit Amount")  # Save Debit Pivot
 
 # Process and save Red Pivot
 red_pivot = filtered_gl.groupby('Account', as_index=False)['Amount'].sum()
-append_and_group_red_pivot(master_file, red_pivot, "Red Pivot")  # Append and group Red Pivot
+append_and_group_pivot(master_file, red_pivot, "Red Pivot", "Amount")  # Save Red Pivot
 
 # Create Tally Res with Grand Totals
 tally_res = red_pivot.copy()
