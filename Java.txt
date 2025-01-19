@@ -2,55 +2,63 @@ import pandas as pd
 import os
 
 # File paths
-payact_file = "path/to/payact.xlsx"  # Update with the correct path
-gl_file = "path/to/gl.xlsx"          # Update with the correct path
-master_file = "path/to/master.xlsx"  # Update with the desired master file path
+payact_file = "path/to/payact.xlsx"  # Replace with your payact file path
+gl_file = "path/to/gl.xlsx"          # Replace with your GL file path
+master_file = "path/to/master.xlsx"  # Replace with your desired master file path
 
 # Load input files
 payact_df = pd.read_excel(payact_file)
 gl_df = pd.read_excel(gl_file)
 
 # Function to append data to an existing sheet or create a new one
-def append_to_excel(file_path, data, sheet_name):
+def append_to_excel(file_path, new_data, sheet_name):
     from openpyxl import load_workbook
-    
-    # If file does not exist, create it
-    if not os.path.exists(file_path):
-        with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
-            data.to_excel(writer, sheet_name=sheet_name, index=False)
-    else:
-        # Load existing file and append to the specified sheet
-        with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="overlay") as writer:
-            # Load existing data
-            existing_data = pd.read_excel(file_path, sheet_name=sheet_name) if sheet_name in pd.ExcelFile(file_path).sheet_names else pd.DataFrame()
-            
-            # Append the new data to existing data
-            updated_data = pd.concat([existing_data, data], ignore_index=True)
-            
-            # Write the updated data back to the sheet
-            updated_data.to_excel(writer, sheet_name=sheet_name, index=False)
 
-# Master file handling
+    if not os.path.exists(file_path):
+        # Create file if it doesn't exist
+        with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
+            new_data.to_excel(writer, sheet_name=sheet_name, index=False)
+    else:
+        # Load existing data and append
+        with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="overlay") as writer:
+            try:
+                existing_data = pd.read_excel(file_path, sheet_name=sheet_name)
+                combined_data = pd.concat([existing_data, new_data], ignore_index=True)
+            except ValueError:
+                combined_data = new_data  # If sheet doesn't exist, use only new data
+            combined_data.to_excel(writer, sheet_name=sheet_name, index=False)
+
+# Master file creation and updates
 if not os.path.exists(master_file):
-    # Create master file with initial sheets
+    # First time: create master file
     with pd.ExcelWriter(master_file, engine="openpyxl") as writer:
+        # Write payact data
         payact_df.to_excel(writer, sheet_name="payact", index=False)
+
+        # Filter and write Daily Consolidate data
         filtered_gl = gl_df[(gl_df['Type'] == 'res') & (gl_df['Terminal'] == 'z@td')]
         filtered_gl.to_excel(writer, sheet_name="Daily Consolidate", index=False)
+
+        # Create and write Red Pivot data
         if 'Account' in filtered_gl.columns and 'Amount' in filtered_gl.columns:
             red_pivot = filtered_gl.groupby('Account', as_index=False)['Amount'].sum().rename(columns={'Amount': 'Sum'})
             red_pivot.to_excel(writer, sheet_name="Red Pivot", index=False)
         else:
             pd.DataFrame().to_excel(writer, sheet_name="Red Pivot", index=False)
+    print("Master file created for the first time.")
 else:
     # Append to existing sheets
     append_to_excel(master_file, payact_df, "payact")
+
+    # Filter GL data for Daily Consolidate sheet
     filtered_gl = gl_df[(gl_df['Type'] == 'res') & (gl_df['Terminal'] == 'z@td')]
     append_to_excel(master_file, filtered_gl, "Daily Consolidate")
-    # Recalculate Red Pivot from combined data
+
+    # Recalculate Red Pivot based on the entire Daily Consolidate sheet
     daily_consolidate_df = pd.read_excel(master_file, sheet_name="Daily Consolidate")
     if 'Account' in daily_consolidate_df.columns and 'Amount' in daily_consolidate_df.columns:
         red_pivot = daily_consolidate_df.groupby('Account', as_index=False)['Amount'].sum().rename(columns={'Amount': 'Sum'})
-        append_to_excel(master_file, red_pivot, "Red Pivot")
+        with pd.ExcelWriter(master_file, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+            red_pivot.to_excel(writer, sheet_name="Red Pivot", index=False)
 
-print("Master file updated successfully.")
+    print("Master file updated successfully.")
