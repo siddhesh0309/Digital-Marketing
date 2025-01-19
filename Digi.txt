@@ -1,0 +1,117 @@
+import pandas as pd
+import os
+import fnmatch
+from datetime import datetime
+
+# Function to find the latest file
+def find_file(filename_pattern, basedir="C://Users/"):
+    latest_file = None
+    latest_time = 0
+    for user_folder in os.listdir(basedir):
+        user_path = os.path.join(basedir, user_folder, 'desktop', 'TDSReconsilation', 'Daily', 'input')
+        if os.path.isdir(user_path):
+            for dirpath, dirnames, filenames in os.walk(user_path):
+                for filename in fnmatch.filter(filenames, filename_pattern):
+                    path = os.path.join(dirpath, filename)
+                    file_mtime = os.path.getmtime(path)
+                    if file_mtime > latest_time:
+                        latest_time = file_mtime
+                        latest_file = path
+    if not latest_file:
+        print(f"Can't find file {filename_pattern}")
+    return latest_file
+
+# Function to create the output folder
+def create_output_folder(base_path):
+    today = datetime.now().strftime('%y-%m-%d')
+    output_folder = os.path.join(base_path, 'output', today)
+    os.makedirs(output_folder, exist_ok=True)
+    return output_folder
+
+# Find the required files
+latest_Payacct_file = find_file('Payacct*')
+print(latest_Payacct_file)
+latest_Gl_file = find_file('Res_NonRes_GL*')
+print(latest_Gl_file)
+
+# Reading data from the files
+db_GL = pd.read_excel(latest_Gl_file, engine='pyxlsb', header=1)
+df_payact = pd.read_excel(latest_Payacct_file, engine='openpyxl', header=1)
+
+# Create output folder
+user_folder = os.path.dirname(latest_Payacct_file)
+output_folder = create_output_folder(user_folder)
+updated_date = datetime.now().strftime('%d.%m.%Y')
+
+# Processing GL data
+df_copying_filtered = db_GL[(db_GL['Type'] == 'Res') & (db_GL['Capture_Terminal_ID'] == 'Z@TD')]
+df_copying_filtered_unique = df_copying_filtered.copy()
+
+# RES PIVOT
+res_pivot = df_copying_filtered_unique.groupby('ACCOUNT')['LCY_TRAN_AMT'].sum().reset_index()
+res_pivot.columns = ['ACCOUNT', 'SUM LCY_TRAN_AMT']
+res_pivot.loc[len(res_pivot)] = ['Grand Total', res_pivot['SUM LCY_TRAN_AMT'].sum()]
+
+# Datewise PIVOT
+date_pivot = df_copying_filtered_unique.groupby('POSTING_DATE')['LCY_TRAN_AMT'].sum().reset_index()
+date_pivot.columns = ['POSTING_DATE', 'SUM LCY_TRAN_AMT']
+date_pivot.loc[len(date_pivot)] = ['Grand Total', date_pivot['SUM LCY_TRAN_AMT'].sum()]
+
+# Manual RES
+manual_res = db_GL[(db_GL['Type'] == 'Res') & (db_GL['Capture_Terminal_ID'] != 'Z@TD')]
+manual_res['debit/credit'] = manual_res['TRAN_AMT'].apply(lambda x: 'Debit' if '-' in str(x) else 'Credit')
+manual_res['LCY_TRAN_AMT'] = manual_res['LCY_TRAN_AMT'].abs()
+
+# Manual Pivot
+credit_data = manual_res[manual_res['debit/credit'] == 'Credit']
+debit_data = manual_res[manual_res['debit/credit'] == 'Debit']
+
+credit_pivot = credit_data.groupby('ACCOUNT')['LCY_TRAN_AMT'].sum().reset_index()
+credit_pivot.columns = ['ACCOUNT', 'CREDIT LCY_TRAN_AMT']
+credit_pivot.loc[len(credit_pivot)] = ['Grand Total', credit_pivot['CREDIT LCY_TRAN_AMT'].sum()]
+
+debit_pivot = debit_data.groupby('ACCOUNT')['LCY_TRAN_AMT'].sum().reset_index()
+debit_pivot.columns = ['ACCOUNT', 'DEBIT LCY_TRAN_AMT']
+debit_pivot.loc[len(debit_pivot)] = ['Grand Total', debit_pivot['DEBIT LCY_TRAN_AMT'].sum()]
+
+# Tally RES
+tally_res_pivot = df_copying_filtered_unique.groupby('ACCOUNT')['LCY_TRAN_AMT'].sum().reset_index()
+tally_res_pivot.columns = ['Branch', 'System Breakup- Z@TD']
+
+# Merging Data
+Res_acc_Non_Res_Credit = res_pivot.merge(credit_pivot, on='ACCOUNT', how='left')
+Res_acc_Non_Res_Debit = Res_acc_Non_Res_Credit.merge(debit_pivot, on='ACCOUNT', how='left')
+Res_acc_Non_Res_Debit.fillna(0, inplace=True)
+
+# Adding Total Column
+Res_acc_Non_Res_Debit['Total'] = Res_acc_Non_Res_Debit['SUM LCY_TRAN_AMT'] - Res_acc_Non_Res_Debit['DEBIT LCY_TRAN_AMT'] + Res_acc_Non_Res_Debit['CREDIT LCY_TRAN_AMT']
+
+# Remove the first "Grand Total"
+first_grand_total_index = Res_acc_Non_Res_Debit[Res_acc_Non_Res_Debit['ACCOUNT'] == 'Grand Total'].index[0]
+Res_acc_Non_Res_Debit = Res_acc_Non_Res_Debit.drop(first_grand_total_index).reset_index(drop=True)
+
+# Recalculate Grand Total
+grand_total = Res_acc_Non_Res_Debit.iloc[:, 1:-1].sum(numeric_only=True)  # Summing numeric columns
+grand_total_row = pd.DataFrame([['Grand Total'] + grand_total.tolist() + [True]], columns=Res_acc_Non_Res_Debit.columns)
+final_summary = pd.concat([Res_acc_Non_Res_Debit, grand_total_row], ignore_index=True)
+
+# Rename Columns
+final_summary.rename(columns={
+    'ACCOUNT': 'BRANCH',
+    'SUM LCY_TRAN_AMT': 'System Breakup- Z@TD',
+    'CREDIT LCY_TRAN_AMT': 'MANUAL CREDIT',
+    'DEBIT LCY_TRAN_AMT': 'MANUAL DEBIT',
+    'Ledger_Balance': 'Payments'
+}, inplace=True)
+
+# Save output to Excel
+new_master_file = os.path.join(output_folder, f'Daily_Reconsilation_{updated_date}.xlsx')
+with pd.ExcelWriter(new_master_file, engine='openpyxl') as writer:
+    final_summary.to_excel(writer, sheet_name='Tally-Res', index=False)
+    res_pivot.to_excel(writer, sheet_name='Res Pivot', index=False)
+    date_pivot.to_excel(writer, sheet_name='Date Pivot', index=False)
+    manual_res.to_excel(writer, sheet_name='Manual Voucher - Res', index=False)
+    credit_pivot.to_excel(writer, sheet_name='Pivot - Manual - Res', startrow=0, startcol=0)
+    debit_pivot.to_excel(writer, sheet_name='Pivot - Manual - Res', startrow=len(credit_pivot) + 3, startcol=0)
+
+print(f"Output saved to: {new_master_file}")
