@@ -51,6 +51,27 @@ def append_and_sum_grouped(file_path, new_data, sheet_name, column_name):
         with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
             grouped_data.to_excel(writer, sheet_name=sheet_name, index=False)
 
+# Function to update Tally Res and remove duplicate Grand Total rows
+def update_tally_res(file_path, new_tally_res, sheet_name):
+    if os.path.exists(file_path):
+        try:
+            # Load existing Tally Res
+            existing_data = pd.read_excel(file_path, sheet_name=sheet_name)
+            # Remove any existing "Grand Total" rows
+            existing_data = existing_data[existing_data['Account'] != 'Grand Total']
+            # Combine existing and new data
+            combined_data = pd.concat([existing_data, new_tally_res], ignore_index=True)
+        except ValueError:
+            # If the sheet doesn't exist, use only new data
+            combined_data = new_tally_res
+    else:
+        # If the file doesn't exist, use only new data
+        combined_data = new_tally_res
+
+    # Write the updated Tally Res back to the sheet
+    with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+        combined_data.to_excel(writer, sheet_name=sheet_name, index=False)
+
 # Process payact
 append_and_sum_raw(master_file, payact_df, "payact")
 
@@ -99,7 +120,7 @@ grand_total_row = pd.DataFrame({
 # Add Grand Total to Tally Res
 tally_res_with_total = pd.concat([tally_res, grand_total_row], ignore_index=True)
 
-# Write Tally Res to the master file
-append_and_sum_raw(master_file, tally_res_with_total, "Tally Res")
+# Update Tally Res in the master file
+update_tally_res(master_file, tally_res_with_total, "Tally Res")
 
 print("Master file updated successfully.")
