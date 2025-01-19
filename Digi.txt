@@ -1,9 +1,8 @@
+import pandas as pd
 import os
 import fnmatch
-import pandas as pd
 from datetime import datetime
 
-# Helper functions
 def find_file(filename_pattern, basedir="C://Users/"):
     latest_file = None
     latest_time = 0
@@ -18,7 +17,7 @@ def find_file(filename_pattern, basedir="C://Users/"):
                         latest_time = file_mtime
                         latest_file = path
     if not latest_file:
-        print(f"Can't find file {filename_pattern}")
+        print(f"Cannot find file {filename_pattern}")
     return latest_file
 
 def create_output_folder(base_path):
@@ -27,97 +26,109 @@ def create_output_folder(base_path):
     os.makedirs(output_folder, exist_ok=True)
     return output_folder
 
-# Step 1: Locate the latest files
-latest_Payacct_file = find_file('Payacct*')
-latest_Gl_file = find_file('Res_NonRes_GL*')
+updated_date = datetime.now().strftime('%d.%m.%Y')
 
-# Step 2: Read the data
+latest_Payacct_file = find_file('Payacct*')
+print(latest_Payacct_file)
+latest_Gl_file = find_file('Res_NonRes_GL*')
+print(latest_Gl_file)
+
+db_GL = pd.read_excel(latest_Gl_file, engine='pyxlsb', header=1)
 df_payact = pd.read_excel(latest_Payacct_file, engine='openpyxl', header=1)
 
-# Step 3: Prepare `payact` sheet
-payact_sheet = df_payact[['AccountNO', 'Ledger_Balance', 'Classification']]
+user_folder = os.path.dirname(latest_Payacct_file)
+output_folder = create_output_folder(user_folder)
 
-# Step 4: Process GL data
-db_GL = pd.read_excel(latest_Gl_file, engine='pyxlsb', header=1)
-df_GL_filtered = db_GL[(db_GL['Type'] == 'Res') & (db_GL['Capture_Terminal_ID'] == 'Z@TD')].copy()
-res_pivot = df_GL_filtered.groupby('ACCOUNT')['LCY_TRAN_AMT'].sum().reset_index()
+db_payact = pd.read_excel(latest_Payacct_file)
+db_copying = db_payact[['AccountNO', 'Ledger _Balance', 'Classification']]
+
+df_GL = pd.read_excel(latest_Gl_file)
+df_copying_filtered = df_GL[(df_GL['Type'] == 'Res') & (df_GL['Capture_Terminal_ID'] == 'Z@TD')]
+
+# RES Pivot
+df_copying_filtered_unique = df_copying_filtered.copy()
+res_pivot = df_copying_filtered_unique.groupby('ACCOUNT')['LCY_TRAN_AMT'].sum().reset_index()
 res_pivot.columns = ['ACCOUNT', 'SUM LCY_TRAN_AMT']
+res_pivot.loc[len(res_pivot)] = ['Grand Total', res_pivot['SUM LCY_TRAN_AMT'].sum()]
 
-# Date-wise pivot
-date_pivot = df_GL_filtered.groupby('POSTING_DATE')['LCY_TRAN_AMT'].sum().reset_index()
+# Date-wise Pivot
+date_pivot = df_copying_filtered_unique.groupby('POSTING_DATE')['LCY_TRAN_AMT'].sum().reset_index()
 date_pivot.columns = ['POSTING_DATE', 'SUM LCY_TRAN_AMT']
+date_pivot.loc[len(date_pivot)] = ['Grand Total', date_pivot['SUM LCY_TRAN_AMT'].sum()]
 
-# Step 5: Process manual entries
-manual_res = db_GL[(db_GL['Type'] == 'Res') & (db_GL['Capture_Terminal_ID'] != 'Z@TD')].copy()
+# Manual Res
+manual_res = df_GL[(df_GL['Type'] == 'Res') & (df_GL['Capture_Terminal_ID'] != 'Z@TD')]
 manual_res['debit/credit'] = manual_res['TRAN_AMT'].apply(lambda x: 'Debit' if '-' in str(x) else 'Credit')
 manual_res['LCY_TRAN_AMT'] = manual_res['LCY_TRAN_AMT'].abs()
 
+# Manual Pivot
 credit_data = manual_res[manual_res['debit/credit'] == 'Credit']
 debit_data = manual_res[manual_res['debit/credit'] == 'Debit']
 
 credit_pivot = credit_data.groupby('ACCOUNT')['LCY_TRAN_AMT'].sum().reset_index()
 credit_pivot.columns = ['ACCOUNT', 'CREDIT LCY_TRAN_AMT']
-
 debit_pivot = debit_data.groupby('ACCOUNT')['LCY_TRAN_AMT'].sum().reset_index()
 debit_pivot.columns = ['ACCOUNT', 'DEBIT LCY_TRAN_AMT']
 
-# Step 6: Create final summary
-final_summary = res_pivot.join(credit_pivot.set_index('ACCOUNT'), on='ACCOUNT')
-final_summary = final_summary.join(debit_pivot.set_index('ACCOUNT'), on='ACCOUNT')
+credit_pivot.loc[len(credit_pivot)] = ['Grand Total', credit_pivot['CREDIT LCY_TRAN_AMT'].sum()]
+debit_pivot.loc[len(debit_pivot)] = ['Grand Total', debit_pivot['DEBIT LCY_TRAN_AMT'].sum()]
+
+# Final Summary
+Res_acc_Non_Res_Credit = res_pivot.join(credit_pivot.set_index('ACCOUNT'), on='ACCOUNT')
+Res_acc_Non_Res_Debit = res_pivot.join(debit_pivot.set_index('ACCOUNT'), on='ACCOUNT')
+
+final_summary = pd.merge(Res_acc_Non_Res_Credit, Res_acc_Non_Res_Debit, on=['ACCOUNT', 'SUM LCY_TRAN_AMT'])
 final_summary.fillna(0, inplace=True)
 
-# Add payment data
-final_summary = final_summary.merge(df_payact[['AccountNO', 'Ledger_Balance']], left_on='ACCOUNT', right_on='AccountNO', how='left')
+payact_payments = db_payact
+final_summary = final_summary.merge(
+    payact_payments[['AccountNO', 'Ledger _Balance']],
+    left_on='ACCOUNT', right_on='AccountNO',
+    how='left'
+)
 final_summary.drop(columns=['AccountNO'], inplace=True)
 
+# Calculate Total and Difference
 final_summary['Total'] = final_summary['SUM LCY_TRAN_AMT'] - final_summary['DEBIT LCY_TRAN_AMT'] + final_summary['CREDIT LCY_TRAN_AMT']
-final_summary['Difference'] = final_summary['Total'] == final_summary['Ledger_Balance']
+final_summary['Difference'] = final_summary['Total'] == final_summary['Ledger _Balance']
 
-# Step 7: Add Grand Totals
-def add_grand_total(df, group_columns, total_columns):
-    grand_total_row = {col: df[col].sum() if col in total_columns else 'Grand Total' for col in df.columns}
-    df = df[~df[group_columns[0]].str.contains('Grand Total', na=False)]
-    return df.append(grand_total_row, ignore_index=True)
+# Remove old Grand Total rows
+final_summary = final_summary[~final_summary['ACCOUNT'].str.contains('Grand Total', na=False)]
 
-res_pivot = add_grand_total(res_pivot, ['ACCOUNT'], ['SUM LCY_TRAN_AMT'])
-date_pivot = add_grand_total(date_pivot, ['POSTING_DATE'], ['SUM LCY_TRAN_AMT'])
-credit_pivot = add_grand_total(credit_pivot, ['ACCOUNT'], ['CREDIT LCY_TRAN_AMT'])
-debit_pivot = add_grand_total(debit_pivot, ['ACCOUNT'], ['DEBIT LCY_TRAN_AMT'])
-final_summary = add_grand_total(final_summary, ['ACCOUNT'], ['SUM LCY_TRAN_AMT', 'CREDIT LCY_TRAN_AMT', 'DEBIT LCY_TRAN_AMT', 'Ledger_Balance', 'Total'])
+# Add new Grand Total row
+grand_total_row = {
+    'ACCOUNT': 'Grand Total',
+    'SUM LCY_TRAN_AMT': final_summary['SUM LCY_TRAN_AMT'].sum(),
+    'CREDIT LCY_TRAN_AMT': final_summary['CREDIT LCY_TRAN_AMT'].sum(),
+    'DEBIT LCY_TRAN_AMT': final_summary['DEBIT LCY_TRAN_AMT'].sum(),
+    'Ledger _Balance': final_summary['Ledger _Balance'].sum(),
+    'Total': final_summary['Total'].sum(),
+    'Difference': True
+}
+final_summary = final_summary.append(grand_total_row, ignore_index=True)
 
-# Step 8: Save to Excel
-output_folder = create_output_folder(os.path.dirname(latest_Payacct_file))
-new_master_file = os.path.join(output_folder, f'Daily_Reconsilation_{datetime.now().strftime("%d.%m.%Y")}.xlsx')
-
-with pd.ExcelWriter(new_master_file, mode='w', engine='openpyxl') as writer:
-    # Payact sheet
-    payact_sheet.to_excel(writer, sheet_name='Payact', index=False)
-
-    # Res Pivot
-    res_pivot.rename(columns={'ACCOUNT': 'BRANCH', 'SUM LCY_TRAN_AMT': 'System Breakup- Z@TD'}, inplace=True)
-    res_pivot.to_excel(writer, sheet_name='Res Pivot', index=False)
-    
-    # Date Pivot
-    date_pivot.to_excel(writer, sheet_name='Date Pivot', index=False)
-    
-    # Manual voucher
-    manual_res.to_excel(writer, sheet_name='Manual voucher - Res', index=False)
-    
-    # Pivot - Manual - Res
-    credit_pivot.rename(columns={'CREDIT LCY_TRAN_AMT': 'MANUAL CREDIT'}, inplace=True)
-    credit_pivot.to_excel(writer, sheet_name='Pivot - Manual - Res', index=False, startrow=0, startcol=0)
-    
-    debit_pivot.rename(columns={'DEBIT LCY_TRAN_AMT': 'MANUAL DEBIT'}, inplace=True)
-    debit_pivot.to_excel(writer, sheet_name='Pivot - Manual - Res', index=False, startrow=len(credit_pivot) + 3, startcol=0)
-    
-    # Tally-Res
-    final_summary.rename(columns={
+# Rename Columns
+final_summary.rename(
+    columns={
         'ACCOUNT': 'BRANCH',
         'SUM LCY_TRAN_AMT': 'System Breakup- Z@TD',
         'CREDIT LCY_TRAN_AMT': 'MANUAL CREDIT',
         'DEBIT LCY_TRAN_AMT': 'MANUAL DEBIT',
-        'Ledger_Balance': 'Payments'
-    }, inplace=True)
+        'Ledger _Balance': 'Payments'
+    },
+    inplace=True
+)
+
+# Save to Excel
+new_master_file = os.path.join(output_folder, f'Daily_Reconsilation_{updated_date}.xlsx')
+with pd.ExcelWriter(new_master_file, engine='openpyxl') as writer:
+    db_copying.to_excel(writer, sheet_name='payact', index=False)
+    df_copying_filtered.to_excel(writer, sheet_name='Daily consolidate-Res', index=False)
+    res_pivot.to_excel(writer, sheet_name='Res Pivot', index=False)
+    date_pivot.to_excel(writer, sheet_name='Date Pivot', index=False)
+    manual_res.to_excel(writer, sheet_name='Manual voucher - Res', index=False)
+    credit_pivot.to_excel(writer, sheet_name='Pivot - Manual - Res', index=False, startcol=0)
+    debit_pivot.to_excel(writer, sheet_name='Pivot - Manual - Res', index=False, startcol=3)
     final_summary.to_excel(writer, sheet_name='Tally-Res', index=False)
 
 print(f"Output saved to: {new_master_file}")
