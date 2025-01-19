@@ -1,0 +1,104 @@
+import pandas as pd
+import os
+
+# File paths
+payact_file = "path/to/payact.xlsx"  # Replace with your actual file path
+gl_file = "path/to/gl.xlsx"          # Replace with your actual file path
+master_file = "path/to/master.xlsx"  # Replace with your desired master file path
+
+# Load input files
+payact_df = pd.read_excel(payact_file)
+gl_df = pd.read_excel(gl_file)
+
+# Debug: Print GL data to confirm it is loaded
+print("GL Data Loaded:")
+print(gl_df)
+
+# Function to append raw data without grouping, ensuring all columns are retained
+def append_and_sum_raw(file_path, new_data, sheet_name):
+    if not os.path.exists(file_path):
+        # Create the file and write the data if it doesn't exist
+        with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
+            new_data.to_excel(writer, sheet_name=sheet_name, index=False)
+    else:
+        try:
+            # Load existing data
+            existing_data = pd.read_excel(file_path, sheet_name=sheet_name)
+            # Combine existing and new data
+            combined_data = pd.concat([existing_data, new_data], ignore_index=True)
+        except ValueError:
+            # If the sheet doesn't exist, use only new data
+            combined_data = new_data
+
+        # Write the combined data back to the sheet
+        with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+            combined_data.to_excel(writer, sheet_name=sheet_name, index=False)
+
+# Function to append grouped data and sum by Account for pivots
+def append_and_sum_grouped(file_path, new_data, sheet_name, column_name):
+    if not os.path.exists(file_path):
+        with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
+            new_data.to_excel(writer, sheet_name=sheet_name, index=False)
+    else:
+        try:
+            existing_data = pd.read_excel(file_path, sheet_name=sheet_name)
+            combined_data = pd.concat([existing_data, new_data], ignore_index=True)
+        except ValueError:
+            combined_data = new_data
+
+        grouped_data = combined_data.groupby('Account', as_index=False)[column_name].sum()
+
+        with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+            grouped_data.to_excel(writer, sheet_name=sheet_name, index=False)
+
+# Process Daily Consolidate
+filtered_gl = gl_df[(gl_df['Type'] == 'res') & (gl_df['Terminal'] == 'z@td')]
+append_and_sum_raw(master_file, filtered_gl, "Daily Consolidate")
+
+# Process Manual Voucher
+manual_voucher = gl_df[(gl_df['Type'] == 'res') & (gl_df['Terminal'] != 'z@td')].copy()
+if not manual_voucher.empty:
+    manual_voucher['D/C'] = manual_voucher['Amount'].apply(lambda x: 'Debit' if x < 0 else 'Credit')
+    manual_voucher['Amount'] = manual_voucher['Amount'].abs()
+    append_and_sum_raw(master_file, manual_voucher, "Manual Voucher")
+
+# Process Credit Pivot
+credit_pivot = manual_voucher[manual_voucher['D/C'] == 'Credit'].groupby('Account', as_index=False)['Amount'].sum()
+credit_pivot = credit_pivot.rename(columns={'Amount': 'Credit Amount'})
+append_and_sum_grouped(master_file, credit_pivot, "Credit Pivot", "Credit Amount")
+
+# Process Debit Pivot
+debit_pivot = manual_voucher[manual_voucher['D/C'] == 'Debit'].groupby('Account', as_index=False)['Amount'].sum()
+debit_pivot = debit_pivot.rename(columns={'Amount': 'Debit Amount'})
+append_and_sum_grouped(master_file, debit_pivot, "Debit Pivot", "Debit Amount")
+
+# Process Red Pivot
+red_pivot = filtered_gl.groupby('Account', as_index=False)['Amount'].sum()
+
+# Create Tally Res with Grand Totals
+tally_res = red_pivot.copy()
+tally_res = pd.merge(tally_res, debit_pivot, on='Account', how='left')
+tally_res = pd.merge(tally_res, credit_pivot, on='Account', how='left')
+tally_res['Debit Amount'] = tally_res['Debit Amount'].fillna(0)
+tally_res['Credit Amount'] = tally_res['Credit Amount'].fillna(0)
+tally_res['Total'] = tally_res['Amount'] - tally_res['Debit Amount'] + tally_res['Credit Amount']
+
+# Calculate Grand Totals
+grand_total_row = pd.DataFrame({
+    'Account': ['Grand Total'],
+    'Amount': [tally_res['Amount'].sum()],
+    'Debit Amount': [tally_res['Debit Amount'].sum()],
+    'Credit Amount': [tally_res['Credit Amount'].sum()],
+    'Total': [tally_res['Total'].sum()]
+})
+
+# Add Grand Total to Tally Res
+tally_res_with_total = pd.concat([tally_res, grand_total_row], ignore_index=True)
+
+# Write all data to the master file
+with pd.ExcelWriter(master_file, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+    payact_df.to_excel(writer, sheet_name="payact", index=False)
+    tally_res_with_total.to_excel(writer, sheet_name="Tally Res", index=False)
+    red_pivot.to_excel(writer, sheet_name="Red Pivot", index=False)
+
+print("Master file updated successfully.")
