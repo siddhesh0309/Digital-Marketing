@@ -57,6 +57,17 @@ if not os.path.exists(master_file):
         print(filtered_gl)
         filtered_gl.to_excel(writer, sheet_name="Daily Consolidate", index=False)
 
+        # Create and write Manual Voucher data
+        manual_voucher = gl_df[(gl_df['Type'] == 'res') & (gl_df['Terminal'] != 'z@td')].copy()
+        if not manual_voucher.empty:
+            # Create D/C column
+            manual_voucher['D/C'] = manual_voucher['Amount'].apply(lambda x: 'Debit' if x < 0 else 'Credit')
+            # Remove negative signs from Amount column
+            manual_voucher['Amount'] = manual_voucher['Amount'].abs()
+        print("Filtered GL Data for Manual Voucher:")
+        print(manual_voucher)
+        manual_voucher.to_excel(writer, sheet_name="Manual Voucher", index=False)
+
         # Create and write Red Pivot data
         if 'Account' in filtered_gl.columns and 'Amount' in filtered_gl.columns:
             red_pivot = filtered_gl.groupby('Account', as_index=False)['Amount'].sum()
@@ -83,6 +94,17 @@ else:
         append_to_sheet(master_file, filtered_gl, "Daily Consolidate")
     else:
         print("No data matching the filter criteria. Skipping Daily Consolidate update.")
+
+    # Filter GL data for Manual Voucher sheet and append it
+    manual_voucher = gl_df[(gl_df['Type'] == 'res') & (gl_df['Terminal'] != 'z@td')].copy()
+    if not manual_voucher.empty:
+        # Create D/C column
+        manual_voucher['D/C'] = manual_voucher['Amount'].apply(lambda x: 'Debit' if x < 0 else 'Credit')
+        # Remove negative signs from Amount column
+        manual_voucher['Amount'] = manual_voucher['Amount'].abs()
+        append_to_sheet(master_file, manual_voucher, "Manual Voucher")
+    else:
+        print("No data matching the filter criteria. Skipping Manual Voucher update.")
 
     # Recalculate Red Pivot based on updated Daily Consolidate data
     daily_consolidate_df = pd.read_excel(master_file, sheet_name="Daily Consolidate")
