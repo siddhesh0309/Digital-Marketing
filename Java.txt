@@ -15,37 +15,30 @@ print("GL Data Loaded:")
 print(gl_df)
 
 # Function to append new data to an existing sheet or create a new one
-def append_to_sheet(file_path, new_data, sheet_name):
-    from openpyxl import load_workbook
-
+def append_and_sum(file_path, new_data, sheet_name, column_name):
     if not os.path.exists(file_path):
-        # Create file if it doesn't exist
-        print(f"Creating new file: {file_path}")
+        # Create the file and write the data if it doesn't exist
         with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
             new_data.to_excel(writer, sheet_name=sheet_name, index=False)
     else:
-        # Append data to existing sheet
-        print(f"Appending data to sheet: {sheet_name}")
         try:
             # Load existing data
             existing_data = pd.read_excel(file_path, sheet_name=sheet_name)
-            print(f"Existing data in {sheet_name} sheet:")
-            print(existing_data)
             # Combine existing and new data
             combined_data = pd.concat([existing_data, new_data], ignore_index=True)
         except ValueError:
             # If the sheet doesn't exist, use only new data
-            print(f"Sheet {sheet_name} does not exist. Creating it.")
             combined_data = new_data
 
-        # Write combined data back to the sheet
+        # Group by Account and sum the amounts
+        grouped_data = combined_data.groupby('Account', as_index=False)[column_name].sum()
+
+        # Write the grouped data back to the sheet
         with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-            combined_data.to_excel(writer, sheet_name=sheet_name, index=False)
-        print(f"Data appended to {sheet_name} successfully.")
+            grouped_data.to_excel(writer, sheet_name=sheet_name, index=False)
 
 # Master file handling
 if not os.path.exists(master_file):
-    # First time: Create master file
     print("Master file not found. Creating a new one.")
     with pd.ExcelWriter(master_file, engine="openpyxl") as writer:
         # Write payact data
@@ -53,80 +46,77 @@ if not os.path.exists(master_file):
 
         # Filter and write Daily Consolidate data
         filtered_gl = gl_df[(gl_df['Type'] == 'res') & (gl_df['Terminal'] == 'z@td')]
-        print("Filtered GL Data for Daily Consolidate:")
-        print(filtered_gl)
         filtered_gl.to_excel(writer, sheet_name="Daily Consolidate", index=False)
 
         # Create and write Manual Voucher data
         manual_voucher = gl_df[(gl_df['Type'] == 'res') & (gl_df['Terminal'] != 'z@td')].copy()
         if not manual_voucher.empty:
-            # Create D/C column
             manual_voucher['D/C'] = manual_voucher['Amount'].apply(lambda x: 'Debit' if x < 0 else 'Credit')
-            # Remove negative signs from Amount column
             manual_voucher['Amount'] = manual_voucher['Amount'].abs()
-        print("Filtered GL Data for Manual Voucher:")
-        print(manual_voucher)
         manual_voucher.to_excel(writer, sheet_name="Manual Voucher", index=False)
 
-        # Create and write Red Pivot data
+        # Create Credit Pivot
+        credit_pivot = manual_voucher[manual_voucher['D/C'] == 'Credit'].groupby('Account', as_index=False)['Amount'].sum()
+        credit_pivot = credit_pivot.rename(columns={'Amount': 'Credit Amount'})
+        credit_pivot.to_excel(writer, sheet_name="Credit Pivot", index=False)
+
+        # Create Debit Pivot
+        debit_pivot = manual_voucher[manual_voucher['D/C'] == 'Debit'].groupby('Account', as_index=False)['Amount'].sum()
+        debit_pivot = debit_pivot.rename(columns={'Amount': 'Debit Amount'})
+        debit_pivot.to_excel(writer, sheet_name="Debit Pivot", index=False)
+
+        # Create Red Pivot
         if 'Account' in filtered_gl.columns and 'Amount' in filtered_gl.columns:
             red_pivot = filtered_gl.groupby('Account', as_index=False)['Amount'].sum()
-            
-            # Add Grand Total to Red Pivot
-            grand_total_row = pd.DataFrame({'Account': ['Grand Total'], 'Sum': [red_pivot['Amount'].sum()]})
-            red_pivot_with_total = pd.concat([red_pivot.rename(columns={'Amount': 'Sum'}), grand_total_row], ignore_index=True)
-            print("Red Pivot Data with Grand Total:")
-            print(red_pivot_with_total)
-            red_pivot_with_total.to_excel(writer, sheet_name="Red Pivot", index=False)
-        else:
-            pd.DataFrame().to_excel(writer, sheet_name="Red Pivot", index=False)
-    print("Master file created successfully.")
+            red_pivot.to_excel(writer, sheet_name="Red Pivot", index=False)
+
+        # Create Tally Res
+        tally_res = red_pivot.copy()
+        tally_res = pd.merge(tally_res, debit_pivot, on='Account', how='left')
+        tally_res = pd.merge(tally_res, credit_pivot, on='Account', how='left')
+        tally_res['Debit Amount'] = tally_res['Debit Amount'].fillna(0)
+        tally_res['Credit Amount'] = tally_res['Credit Amount'].fillna(0)
+        tally_res['Total'] = tally_res['Amount'] - tally_res['Debit Amount'] + tally_res['Credit Amount']
+        tally_res.to_excel(writer, sheet_name="Tally Res", index=False)
+
 else:
     # Append to payact sheet
-    append_to_sheet(master_file, payact_df, "payact")
+    append_and_sum(master_file, payact_df, "payact", "Amount")
 
-    # Filter GL data for Daily Consolidate sheet and append it
+    # Filter GL data for Daily Consolidate
     filtered_gl = gl_df[(gl_df['Type'] == 'res') & (gl_df['Terminal'] == 'z@td')]
-    print("Filtered GL Data for Daily Consolidate:")
-    print(filtered_gl)
+    append_and_sum(master_file, filtered_gl, "Daily Consolidate", "Amount")
 
-    if not filtered_gl.empty:
-        append_to_sheet(master_file, filtered_gl, "Daily Consolidate")
-    else:
-        print("No data matching the filter criteria. Skipping Daily Consolidate update.")
-
-    # Filter GL data for Manual Voucher sheet and append it
+    # Filter GL data for Manual Voucher
     manual_voucher = gl_df[(gl_df['Type'] == 'res') & (gl_df['Terminal'] != 'z@td')].copy()
     if not manual_voucher.empty:
-        # Create D/C column
         manual_voucher['D/C'] = manual_voucher['Amount'].apply(lambda x: 'Debit' if x < 0 else 'Credit')
-        # Remove negative signs from Amount column
         manual_voucher['Amount'] = manual_voucher['Amount'].abs()
-        append_to_sheet(master_file, manual_voucher, "Manual Voucher")
-    else:
-        print("No data matching the filter criteria. Skipping Manual Voucher update.")
+        append_and_sum(master_file, manual_voucher, "Manual Voucher", "Amount")
 
-    # Recalculate Red Pivot based on updated Daily Consolidate data
-    daily_consolidate_df = pd.read_excel(master_file, sheet_name="Daily Consolidate")
-    print("Updated Daily Consolidate Data:")
-    print(daily_consolidate_df)
+        # Create Credit Pivot
+        credit_pivot = manual_voucher[manual_voucher['D/C'] == 'Credit'].groupby('Account', as_index=False)['Amount'].sum()
+        credit_pivot = credit_pivot.rename(columns={'Amount': 'Credit Amount'})
+        append_and_sum(master_file, credit_pivot, "Credit Pivot", "Credit Amount")
 
-    if 'Account' in daily_consolidate_df.columns and 'Amount' in daily_consolidate_df.columns:
-        # Group by Account and calculate the sum
-        red_pivot = daily_consolidate_df.groupby('Account', as_index=False)['Amount'].sum()
-        red_pivot = red_pivot.rename(columns={'Amount': 'Sum'})
+        # Create Debit Pivot
+        debit_pivot = manual_voucher[manual_voucher['D/C'] == 'Debit'].groupby('Account', as_index=False)['Amount'].sum()
+        debit_pivot = debit_pivot.rename(columns={'Amount': 'Debit Amount'})
+        append_and_sum(master_file, debit_pivot, "Debit Pivot", "Debit Amount")
 
-        # Calculate the grand total of the Sum column
-        grand_total_row = pd.DataFrame({'Account': ['Grand Total'], 'Sum': [red_pivot['Sum'].sum()]})
-        
-        # Append the grand total row to the Red Pivot
-        red_pivot_with_total = pd.concat([red_pivot, grand_total_row], ignore_index=True)
-        print("Updated Red Pivot Data with Grand Total:")
-        print(red_pivot_with_total)
+        # Create Red Pivot
+        red_pivot = filtered_gl.groupby('Account', as_index=False)['Amount'].sum()
 
-        # Write Red Pivot with Grand Total back to the master file
+        # Create Tally Res
+        tally_res = red_pivot.copy()
+        tally_res = pd.merge(tally_res, debit_pivot, on='Account', how='left')
+        tally_res = pd.merge(tally_res, credit_pivot, on='Account', how='left')
+        tally_res['Debit Amount'] = tally_res['Debit Amount'].fillna(0)
+        tally_res['Credit Amount'] = tally_res['Credit Amount'].fillna(0)
+        tally_res['Total'] = tally_res['Amount'] - tally_res['Debit Amount'] + tally_res['Credit Amount']
+
         with pd.ExcelWriter(master_file, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-            red_pivot_with_total.to_excel(writer, sheet_name="Red Pivot", index=False)
-    else:
-        print("Required columns for Red Pivot not found in Daily Consolidate.")
-    print("Master file updated successfully.")
+            tally_res.to_excel(writer, sheet_name="Tally Res", index=False)
+            red_pivot.to_excel(writer, sheet_name="Red Pivot", index=False)
+
+print("Master file updated successfully.")
