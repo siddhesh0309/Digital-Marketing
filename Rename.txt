@@ -1,0 +1,32 @@
+# Function to rename all columns in Tally Res and update the sheet
+def rename_columns_in_tally_res(file_path, sheet_name, column_mapping):
+    # Load the existing Tally Res data
+    try:
+        tally_res_data = pd.read_excel(file_path, sheet_name=sheet_name)
+        print("Tally Res Data Loaded:")
+        print(tally_res_data.head())
+    except ValueError:
+        print(f"Sheet '{sheet_name}' does not exist in {file_path}.")
+        return
+
+    # Rename the columns
+    tally_res_data = tally_res_data.rename(columns=column_mapping)
+
+    # Write the updated Tally Res data back to the file
+    with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+        tally_res_data.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    print(f"Columns renamed successfully in the '{sheet_name}' sheet.")
+
+# Example column mapping for Tally Res
+column_mapping = {
+    'Account': 'Account Number',
+    'Amount': 'Total Amount',
+    'Payact Amount': 'PayAct Total',
+    'Debit Amount': 'Total Debit',
+    'Credit Amount': 'Total Credit',
+    'Difference': 'Status'
+}
+
+# Call the function to rename columns in Tally Res
+rename_columns_in_tally_res(master_file, sheet_name="Tally Res", column_mapping=column_mapping)
