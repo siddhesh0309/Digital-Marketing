@@ -1,0 +1,22 @@
+# Function to replace Payact sheet only if it exists
+def replace_payact_data(file_path, new_data, sheet_name):
+    # Check if the file exists
+    if os.path.exists(file_path):
+        try:
+            # Load the existing Excel file and get the sheet names
+            existing_sheets = pd.ExcelFile(file_path).sheet_names
+            
+            if sheet_name in existing_sheets:
+                # If the sheet exists, replace it
+                with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+                    new_data.to_excel(writer, sheet_name=sheet_name, index=False)
+            else:
+                # If the sheet does not exist, create a new one
+                with pd.ExcelWriter(file_path, engine="openpyxl", mode="a") as writer:
+                    new_data.to_excel(writer, sheet_name=sheet_name, index=False)
+        except Exception as e:
+            print(f"Error updating Payact sheet: {e}")
+    else:
+        # If the file does not exist, create a new one
+        with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
+            new_data.to_excel(writer, sheet_name=sheet_name, index=False)
